@@ -55,6 +55,38 @@ outputs:
     enabled: true
     device: null                  # null = system default
 
+  icecast:
+    enabled: false
+    host: 127.0.0.1
+    port: 8000
+    mount: /haze
+    username: source
+    password: hackme
+    codec: libmp3lame
+    bitrate: 192k
+    format: mp3
+    content_type: audio/mpeg
+    name: Haze
+    metadata_enabled: true
+    admin_username: admin         # optional; required for metadata updates
+    admin_password: hackme
+
+  udp:
+    enabled: false
+    host: 127.0.0.1
+    port: 5004
+    codec: aac
+    bitrate: 192k
+    format: mpegts
+
+  rtp:
+    enabled: false
+    host: 127.0.0.1
+    port: 5006
+    codec: opus
+    bitrate: 128k
+    format: rtp
+
 transitions:
   default: finish_track           # finish_track | immediate | crossfade
   crossfade_duration: 2.0
@@ -68,10 +100,15 @@ paths:
 ```
 main.py
   └─ PlayoutController      orchestrates playlists + transitions
-       ├─ AudioEngine        decodes via ffmpeg, fans out to outputs
-       │    └─ sounddevice   local audio output
+  ├─ AudioEngine        decodes to a real-time asyncio PCM queue
+  │    ├─ SoundcardSink local audio output
+  │    ├─ IcecastSink   ffmpeg-encoded network stream + metadata updates
+  │    ├─ UdpSink       ffmpeg-encoded UDP stream
+  │    └─ RtpSink       ffmpeg-encoded RTP stream
        └─ TUI (curses)       operator interface
 ```
+
+Each enabled sink receives the same PCM stream from the shared async audio engine. Network sinks encode from that PCM stream with per-sink codec, bitrate, and muxer settings.
 
 
 ## Logs

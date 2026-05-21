@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import queue
 import subprocess
 import threading
 import time
@@ -10,6 +9,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
+from .audio import AudioEngine, StreamMetadata
 from .config import HazeConfig
 from .metadata import TrackMetadata, read as read_metadata
 from .playlist import Playlist, Track, discover
@@ -42,13 +42,12 @@ class Controller:
         
         self.elapsed_seconds: float = 0.0
 
-        self._audio_queue: queue.Queue[Optional[bytes]] = queue.Queue(maxsize=12)
+        self._audio_engine = AudioEngine(cfg, CHUNK_FRAMES)
         self._stop_decode = threading.Event()
         self._pause_event = threading.Event()
         self._pause_event.set()
 
         self._decode_thread: Optional[threading.Thread] = None
-        self._sd_stream = None
 
         self._webserver: Optional[WebServer] = None
         self._tui: Optional[object] = None
@@ -72,7 +71,7 @@ class Controller:
         log.info(f"Discovered {len(self.playlists)} playlist(s): {list(self.playlists.keys())}")
 
     def start(self):
-        self._start_outputs()
+        self._audio_engine.start()
         self.state = State.STOPPED
         default = self.cfg.playout.default_playlist
         if default and default in self.playlists:
@@ -85,7 +84,7 @@ class Controller:
         self._pause_event.set()
         if self._decode_thread and self._decode_thread.is_alive():
             self._decode_thread.join(timeout=1)
-        self._stop_outputs()
+        self._audio_engine.stop()
         self.state = State.STOPPED
 
     def pause(self):
@@ -192,11 +191,7 @@ class Controller:
             if threading.current_thread() is not self._decode_thread:
                 self._decode_thread.join(timeout=1.0)
 
-        while not self._audio_queue.empty():
-            try:
-                self._audio_queue.get_nowait()
-            except queue.Empty:
-                break
+        self._audio_engine.flush()
 
         track = self.current_track
         if not track:
@@ -207,6 +202,7 @@ class Controller:
         if self.current_meta.duration: track.duration = self.current_meta.duration
         self.current_meta.save_art()
         self._write_now_playing(track)
+        self._audio_engine.set_track(StreamMetadata.from_track(track, self.current_meta))
 
 
         log.info(f"Playing: {track}")
@@ -259,15 +255,14 @@ class Controller:
                     break
                 
                 try:
-
-                    self._audio_queue.put(chunk, timeout=0.5)
-                    self.elapsed_seconds += frame_duration
-                except queue.Full:
+                    if self._audio_engine.publish(chunk, timeout=0.5):
+                        self.elapsed_seconds += frame_duration
+                except Exception:
                     continue
 
             if not self._stop_decode.is_set():
-                while not self._audio_queue.empty() and not self._stop_decode.is_set():
-                    time.sleep(0.1)
+                while self._audio_engine.buffered_frames() > 0 and not self._stop_decode.is_set():
+                    time.sleep(0.05)
 
         finally:
             proc.kill()
@@ -288,46 +283,6 @@ class Controller:
             else:
                 self._advance()
                 self._play_current()
-
-    def _start_outputs(self):
-        if self.cfg.soundcard.enabled:
-            self._start_soundcard()
-
-    def _start_soundcard(self):
-        try:
-            import sounddevice as sd
-            import numpy as np
-            sr = self.cfg.playout.sample_rate
-            ch = self.cfg.playout.channels
-            
-            def callback(outdata, frames, time_info, status):
-                try:
-                    chunk = self._audio_queue.get_nowait()
-                    if len(chunk) < (frames * ch * 2):
-                        chunk = chunk.ljust(frames * ch * 2, b"\x00")
-                    pcm = np.frombuffer(chunk, dtype=np.int16)
-                    outdata[:] = pcm.reshape(-1, ch).astype(np.float32) / 32768.0
-                except (queue.Empty, TypeError):
-                    outdata.fill(0)
-
-            self._sd_stream = sd.OutputStream(
-                samplerate=sr, channels=ch, dtype="float32",
-                blocksize=CHUNK_FRAMES,
-                device=self.cfg.soundcard.device,
-                callback=callback,
-            )
-            self._sd_stream.start()
-            log.info("Soundcard output active.")
-        except Exception as e:
-            log.error(f"Soundcard failed: {e}")
-
-
-
-    def _stop_outputs(self):
-        if self._sd_stream:
-            self._sd_stream.stop()
-            self._sd_stream.close()
-            self._sd_stream = None
 
     def _write_now_playing(self, track: Track):
         try:

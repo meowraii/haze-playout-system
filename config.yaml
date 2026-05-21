@@ -12,6 +12,44 @@ outputs:
     enabled: true
     device: null
 
+  icecast:
+    enabled: false
+    host: "127.0.0.1"
+    port: 8000
+    mount: "/haze"
+    username: "source"
+    password: "hackme"
+    codec: "libmp3lame"
+    bitrate: "192k"
+    format: "mp3"
+    content_type: "audio/mpeg"
+    name: "Haze"
+    description: ""
+    genre: ""
+    public: false
+    metadata_enabled: true
+    admin_username: null
+    admin_password: null
+
+  udp:
+    enabled: false
+    host: "127.0.0.1"
+    port: 5004
+    codec: "aac"
+    bitrate: "192k"
+    format: "mpegts"
+    packet_size: 1316
+
+  rtp:
+    enabled: false
+    host: "127.0.0.1"
+    port: 5006
+    codec: "opus"
+    bitrate: "128k"
+    format: "rtp"
+    payload_type: null
+    sdp_file: null
+
 transitions:
   default: finish_track
   crossfade_duration: 2.0
